@@ -2,3 +2,4 @@ Flask
 Pillow
 mediapipe
 numpy<2.0
+gunicorn
