@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>对称图像生成器</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 12px; }
+    .preview { display:flex; gap:12px; align-items:flex-start; }
+    .preview img { max-width:100%; height:auto; border:1px solid #ddd; }
+    .col { flex:1; }
+    .row { display:flex; gap:12px; margin-top:12px; }
+    .center { text-align:center; }
+    label { display:block; margin-top:8px; }
+    .controls { margin:12px 0; }
+    .divider { height:2px; background:#eee; margin:12px 0; }
+    .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; justify-content:center; align-items:center; }
+    .modal.show { display:flex; }
+    .modal-content { max-width:90vw; max-height:90vh; overflow:auto; background:white; padding:10px; }
+    .modal-close { position:absolute; top:10px; right:20px; color:white; font-size:28px; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <h1>对称图像生成器</h1>
+  <p>上传图片，选择分割比例</p>
+
+  {% if message %}
+    <div style="color:crimson">{{ message }}</div>
+  {% endif %}
+
+  <div>
+    <label>图片: <input id="imageInput" type="file" accept="image/*"></label>
+    <button id="detectButton" style="margin-left:8px; padding:6px 12px; cursor:pointer; display:none;">检测人脸</button>
+    <p style="color:#666; font-size:0.9em">上传图片后，点击"检测人脸"按钮，或在原图上拖动红线来调整分割比例。</p>
+  </div>
+
+  <div class="divider"></div>
+
+  <h2>实时预览</h2>
+  <!-- 原图单独显示，按原始像素比例，容器可滚动 -->
+  <h2>原图（可拖动红线操作）</h2>
+  <div class="original-container" style="overflow:auto; border:1px solid #ddd; padding:8px; max-width:100%; max-height:80vh;">
+    <canvas id="previewCanvas" style="display:block; max-width:100%; height:auto;"></canvas>
+  </div>
+  
+  <!-- 隐藏元素存储人脸坐标 -->
+  <div id="facesData" style="display:none;">{{ faces }}</div>
+
+  <h2 style="margin-top:18px">实时结果</h2>
+  <div class="preview">
+    <div class="col center">
+      <h3>左侧镜像 → 右侧</h3>
+      <canvas id="leftRightCanvas" style="max-width:100%; border:1px solid #ddd; cursor:pointer;" title="双击查看大图"></canvas>
+      <div style="margin-top:8px"><a id="downloadLeftRight" href="#">下载</a></div>
+    </div>
+    <div class="col center">
+      <h3>右侧镜像 → 左侧</h3>
+      <canvas id="rightLeftCanvas" style="max-width:100%; border:1px solid #ddd; cursor:pointer;" title="双击查看大图"></canvas>
+      <div style="margin-top:8px"><a id="downloadRightLeft" href="#">下载</a></div>
+    </div>
+  </div>
+
+  <!-- 模态框用于显示放大图像 -->
+  <div id="imageModal" class="modal">
+    <span class="modal-close" onclick="document.getElementById('imageModal').classList.remove('show')">&times;</span>
+    <div class="modal-content" id="modalContent">
+      <canvas id="modalCanvas"></canvas>
+    </div>
+  </div>
+
+
+  {% if original_b64 %}
+  <h2>生成结果</h2>
+  <div class="preview">
+    <div class="col">
+      <h3 class="center">原图</h3>
+      <img src="{{ original_b64 }}" alt="original">
+      <div class="center" style="margin-top:8px"><a href="{{ original_b64 }}" download="original_with_line.png">下载</a></div>
+    </div>
+    <div class="col">
+      <h3 class="center">左侧镜像 → 右侧</h3>
+      <img src="{{ left_mirrored_b64 }}" alt="left_mirrored">
+      <div class="center" style="margin-top:8px"><a href="{{ left_mirrored_b64 }}" download="left_to_right.png">下载</a></div>
+    </div>
+    <div class="col">
+      <h3 class="center">右侧镜像 → 左侧</h3>
+      <img src="{{ right_mirrored_b64 }}" alt="right_mirrored">
+      <div class="center" style="margin-top:8px"><a href="{{ right_mirrored_b64 }}" download="right_to_left.png">下载</a></div>
+    </div>
+  </div>
+  {% endif %}
+
+  <script>
+  (function(){
+    const fileInput = document.getElementById('imageInput');
+    const detectButton = document.getElementById('detectButton');
+    const ratioRange = document.getElementById('ratio');
+    const rval = document.getElementById('rval');
+    const previewCanvas = document.getElementById('previewCanvas');
+    const lrCanvas = document.getElementById('leftRightCanvas');
+    const rlCanvas = document.getElementById('rightLeftCanvas');
+    const dLR = document.getElementById('downloadLeftRight');
+    const dRL = document.getElementById('downloadRightLeft');
+    const pCtx = previewCanvas.getContext && previewCanvas.getContext('2d');
+    const lrCtx = lrCanvas.getContext && lrCanvas.getContext('2d');
+    const rlCtx = rlCanvas.getContext && rlCanvas.getContext('2d');
+    let img = null;
+    let previewImageData = null;
+    let offLeftCanvas = null;
+    let offRightCanvas = null;
+    let dragging = false;
+    let currentRatio = 0.5;  // track ratio without slider
+    let faces = [];  // detected faces from backend
+    let scheduledRender = null; // debounce handle for heavy rendering
+    let uploadedFile = null;  // store uploaded file for detection
+
+    function setCanvasSize(c, w, h){ c.width = w; c.height = h; }
+
+    function drawAll(){
+      if(!img) return;
+      const ratio = currentRatio;
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+
+      // set preview canvas size (use natural size; CSS will scale down if needed)
+      setCanvasSize(previewCanvas, iw, ih);
+
+      const splitX = Math.round(iw * ratio);
+      const lineWidth = Math.max(2, Math.round(ih * 0.005));
+
+      // Original with line
+      pCtx.clearRect(0,0,iw,ih);
+      pCtx.drawImage(img, 0,0, iw, ih);
+      pCtx.beginPath(); pCtx.moveTo(splitX+0.5,0); pCtx.lineTo(splitX+0.5, ih);
+      pCtx.strokeStyle='red'; pCtx.lineWidth = lineWidth; pCtx.stroke();
+
+      // Draw face rectangles in cyan
+      faces.forEach(face => {
+        pCtx.beginPath();
+        pCtx.rect(face.x, face.y, face.w, face.h);
+        pCtx.strokeStyle = 'cyan';
+        pCtx.lineWidth = Math.max(2, Math.round(ih * 0.005));
+        pCtx.stroke();
+      });
+
+
+      // Left -> Right: create image composed of left area + flipped left area (no scaling)
+      const leftW = splitX;
+      const rightW = iw - splitX;
+      if(leftW > 0){
+        const lrW = leftW * 2;
+        setCanvasSize(lrCanvas, lrW, ih);
+        lrCtx.clearRect(0,0,lrW,ih);
+        // use offLeftCanvas to avoid recreating unless leftW changed
+        if(!offLeftCanvas || offLeftCanvas.width !== leftW){ offLeftCanvas = document.createElement('canvas'); offLeftCanvas.width = leftW; offLeftCanvas.height = ih; offLeftCanvas.getContext('2d').clearRect(0,0,leftW,ih); offLeftCanvas.getContext('2d').drawImage(img, 0,0, leftW, ih, 0,0, leftW, ih); }
+        lrCtx.drawImage(offLeftCanvas, 0,0, leftW, ih, 0,0, leftW, ih);
+        lrCtx.save(); lrCtx.translate(leftW * 2, 0); lrCtx.scale(-1, 1);
+        lrCtx.drawImage(offLeftCanvas, 0,0, leftW, ih, 0,0, leftW, ih);
+        lrCtx.restore();
+        // no split line on result image
+      } else {
+        lrCtx.clearRect(0,0,lrCanvas.width, lrCanvas.height);
+      }
+
+      // Right -> Left: create image composed of flipped right area + right area (no scaling)
+      if(rightW > 0){
+        const rlW = rightW * 2;
+        setCanvasSize(rlCanvas, rlW, ih);
+        rlCtx.clearRect(0,0,rlW,ih);
+        if(!offRightCanvas || offRightCanvas.width !== rightW){ offRightCanvas = document.createElement('canvas'); offRightCanvas.width = rightW; offRightCanvas.height = ih; offRightCanvas.getContext('2d').clearRect(0,0,rightW,ih); offRightCanvas.getContext('2d').drawImage(img, splitX,0, rightW, ih, 0,0, rightW, ih); }
+        rlCtx.save(); rlCtx.translate(rightW, 0); rlCtx.scale(-1, 1);
+        rlCtx.drawImage(offRightCanvas, 0,0, rightW, ih, 0,0, rightW, ih);
+        rlCtx.restore();
+        rlCtx.drawImage(offRightCanvas, 0,0, rightW, ih, rightW, 0, rightW, ih);
+        // no split line on result image
+      } else {
+        rlCtx.clearRect(0,0,rlCanvas.width, rlCanvas.height);
+      }
+
+      // update download links for mirrored results
+      dLR.href = lrCanvas.toDataURL('image/png'); dLR.download = 'left_to_right.png';
+      dRL.href = rlCanvas.toDataURL('image/png'); dRL.download = 'right_to_left.png';
+    }
+
+    fileInput.addEventListener('change', function(ev){
+      const f = ev.target.files && ev.target.files[0];
+      if(!f) return;
+      uploadedFile = f;
+      detectButton.style.display = 'inline-block';
+      const reader = new FileReader();
+      reader.onload = function(e){
+          const im = new Image();
+          im.onload = function(){
+            img = im;
+            faces = [];  // reset faces
+            document.getElementById('facesData').textContent = '[]';
+            // draw image once into preview and cache image data for fast overlay updates
+            const iw = img.naturalWidth || img.width;
+            const ih = img.naturalHeight || img.height;
+            setCanvasSize(previewCanvas, iw, ih);
+            pCtx.clearRect(0,0,iw,ih);
+            pCtx.drawImage(img, 0,0, iw, ih);
+            try { previewImageData = pCtx.getImageData(0,0,iw,ih); } catch(e) { previewImageData = null; }
+            // reset offscreen caches
+            offLeftCanvas = null; offRightCanvas = null;
+            drawAll();
+          };
+          im.src = e.target.result;
+      };
+      reader.readAsDataURL(f);
+    });
+
+    // Detect faces button
+    detectButton.addEventListener('click', async function(){
+      if(!uploadedFile) return;
+      detectButton.disabled = true;
+      detectButton.textContent = '检测中...';
+      const formData = new FormData();
+      formData.append('image', uploadedFile);
+      try {
+        const response = await fetch('/detect_faces', {
+          method: 'POST',
+          body: formData
+        });
+        if(response.ok){
+          const data = await response.json();
+          faces = data.faces || [];
+          console.log('检测到人脸:', faces);
+          // persist faces into hidden element so boxes remain after interactions
+          try{ document.getElementById('facesData').textContent = JSON.stringify(faces); }catch(e){}
+          // update overlay immediately and schedule full render (debounced) to avoid UI jank
+          if(img){
+            if(previewImageData && pCtx){
+              pCtx.putImageData(previewImageData,0,0);
+              const iw = previewCanvas.width, ih = previewCanvas.height;
+              const splitX = Math.round(iw * currentRatio);
+              pCtx.beginPath(); pCtx.moveTo(splitX+0.5,0); pCtx.lineTo(splitX+0.5, ih);
+              pCtx.strokeStyle='red'; pCtx.lineWidth = Math.max(2, Math.round(ih * 0.005));
+              pCtx.stroke();
+              faces.forEach(face => { pCtx.beginPath(); pCtx.rect(face.x, face.y, face.w, face.h); pCtx.strokeStyle='cyan'; pCtx.lineWidth = Math.max(2, Math.round(ih * 0.005)); pCtx.stroke(); });
+            }
+            if(scheduledRender) { try{ if(window.cancelIdleCallback && scheduledRender._idleId) cancelIdleCallback(scheduledRender._idleId); }catch(e){} clearTimeout(scheduledRender); scheduledRender = null; }
+            if(window.requestIdleCallback){ const id = requestIdleCallback(()=>{ drawAll(); scheduledRender = null; }); scheduledRender = { _idleId: id }; }
+            else { scheduledRender = setTimeout(()=>{ drawAll(); scheduledRender = null; }, 50); }
+          }
+        }
+      } catch(err) {
+        console.error('人脸检测失败:', err);
+      } finally {
+        detectButton.disabled = false;
+        detectButton.textContent = '检测人脸';
+      }
+    });
+
+    // On input, update only the preview overlay (fast). On change (release), render full results.
+    // (Removed slider events; only drag-based interaction remains)
+
+    // allow dragging the split line on previewCanvas to change ratio
+    previewCanvas.addEventListener('mousedown', function(ev){ if(!img) return; dragging = true; });
+    window.addEventListener('mouseup', function(ev){ if(!dragging) return; dragging = false; // finalize and render
+      if(img) drawAll(); });
+    previewCanvas.addEventListener('mousemove', function(ev){ if(!dragging || !img) return; // only update overlay line, do not re-render heavy canvases
+      if(previewImageData && pCtx){
+        pCtx.putImageData(previewImageData,0,0);
+        const rect = previewCanvas.getBoundingClientRect();
+        const scaleX = previewCanvas.width / rect.width;
+        let x = (ev.clientX - rect.left) * scaleX;
+        x = Math.max(0, Math.min(previewCanvas.width, x));
+        currentRatio = x / previewCanvas.width;
+        pCtx.beginPath(); pCtx.moveTo(x+0.5,0); pCtx.lineTo(x+0.5, previewCanvas.height);
+        pCtx.strokeStyle='red'; pCtx.lineWidth = Math.max(2, Math.round(previewCanvas.height * 0.005));
+        pCtx.stroke();
+      }
+    });
+
+    // Click on face rectangle to set split line to face center
+    previewCanvas.addEventListener('click', function(ev){
+      if(!img || faces.length === 0) return;
+      const rect = previewCanvas.getBoundingClientRect();
+      const scaleX = previewCanvas.width / rect.width;
+      const scaleY = previewCanvas.height / rect.height;
+      const clickX = (ev.clientX - rect.left) * scaleX;
+      const clickY = (ev.clientY - rect.top) * scaleY;
+      // Check if click is within any face
+      for (let face of faces){
+        if(clickX >= face.x && clickX <= face.x + face.w && clickY >= face.y && clickY <= face.y + face.h){
+          // Set split line to face center
+          currentRatio = (face.x + face.w / 2) / previewCanvas.width;
+          // update overlay immediately
+          if(previewImageData && pCtx){
+            pCtx.putImageData(previewImageData,0,0);
+            const iw = previewCanvas.width, ih = previewCanvas.height;
+            const splitX = Math.round(iw * currentRatio);
+            pCtx.beginPath(); pCtx.moveTo(splitX+0.5,0); pCtx.lineTo(splitX+0.5, ih);
+            pCtx.strokeStyle='red'; pCtx.lineWidth = Math.max(2, Math.round(ih * 0.005));
+            pCtx.stroke();
+            faces.forEach(f => { pCtx.beginPath(); pCtx.rect(f.x, f.y, f.w, f.h); pCtx.strokeStyle='cyan'; pCtx.lineWidth = Math.max(2, Math.round(ih * 0.005)); pCtx.stroke(); });
+          }
+          // schedule full render using idle callback or timeout to avoid jank
+          if(scheduledRender){ try{ if(window.cancelIdleCallback && scheduledRender._idleId) cancelIdleCallback(scheduledRender._idleId); }catch(e){} clearTimeout(scheduledRender); scheduledRender = null; }
+          if(window.requestIdleCallback){ const id = requestIdleCallback(()=>{ drawAll(); scheduledRender = null; }); scheduledRender = { _idleId: id }; }
+          else { scheduledRender = setTimeout(()=>{ drawAll(); scheduledRender = null; }, 50); }
+          break;
+        }
+      }
+    });
+
+    // double-click to show enlarged version
+    const showModal = (sourceCanvas) => {
+      const modal = document.getElementById('imageModal');
+      const modalCanvas = document.getElementById('modalCanvas');
+      const mCtx = modalCanvas.getContext('2d');
+      modalCanvas.width = sourceCanvas.width;
+      modalCanvas.height = sourceCanvas.height;
+      mCtx.drawImage(sourceCanvas, 0, 0);
+      modal.classList.add('show');
+    };
+    lrCanvas.addEventListener('dblclick', () => showModal(lrCanvas));
+    rlCanvas.addEventListener('dblclick', () => showModal(rlCanvas));
+    
+    // close modal on Esc key
+    window.addEventListener('keydown', (ev) => {
+      if(ev.key === 'Escape') document.getElementById('imageModal').classList.remove('show');
+    });  })();
+  </script>
+</body>
+</html>
