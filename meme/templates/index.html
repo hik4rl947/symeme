@@ -5,41 +5,51 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>对称图像生成器</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 12px; }
-    .preview { display:flex; gap:12px; align-items:flex-start; }
-    .preview img { max-width:100%; height:auto; border:1px solid #ddd; }
+    body { font-family: Inter, Roboto, Arial, sans-serif; max-width:1100px; margin:28px auto; padding: 0 16px; color:#222; }
+    h1 { font-weight:700; }
+    .preview { display:flex; gap:16px; align-items:flex-start; }
+    .preview img { max-width:100%; height:auto; border-radius:6px; }
     .col { flex:1; }
     .row { display:flex; gap:12px; margin-top:12px; }
     .center { text-align:center; }
     label { display:block; margin-top:8px; }
     .controls { margin:12px 0; }
-    .divider { height:2px; background:#eee; margin:12px 0; }
+    .divider { height:1px; background:#f0f0f0; margin:16px 0; }
     .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; justify-content:center; align-items:center; }
     .modal.show { display:flex; }
-    .modal-content { max-width:90vw; max-height:90vh; overflow:auto; background:white; padding:10px; }
+    .modal-content { max-width:90vw; max-height:90vh; overflow:auto; background:white; padding:10px; border-radius:8px; }
     .modal-close { position:absolute; top:10px; right:20px; color:white; font-size:28px; cursor:pointer; }
+    /* Upload / preview styles */
+    .original-container { position:relative; overflow:auto; border-radius:8px; background:#fafafa; border:1px dashed #e0e0e0; padding:8px; max-width:100%; max-height:80vh; display:flex; align-items:center; justify-content:center; }
+    .drop-instructions { position:absolute; inset:8px; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+    .upload-controls { position:absolute; left:16px; top:16px; display:flex; gap:8px; z-index:10; }
+    .upload-label, .btn { background:#0066ff; color:white; padding:8px 12px; border-radius:6px; cursor:pointer; border:none; font-size:0.95rem; }
+    .btn.secondary { background:#f3f4f6; color:#111; border:1px solid #ddd; }
+    .upload-input { display:none; }
+    canvas { border-radius:6px; }
   </style>
 </head>
 <body>
   <h1>对称图像生成器</h1>
-  <p>上传图片，选择分割比例</p>
 
   {% if message %}
     <div style="color:crimson">{{ message }}</div>
   {% endif %}
 
   <div>
-    <label>图片: <input id="imageInput" type="file" accept="image/*"></label>
-    <button id="detectButton" style="margin-left:8px; padding:6px 12px; cursor:pointer; display:none;">检测人脸</button>
-    <p style="color:#666; font-size:0.9em">上传图片后，点击"检测人脸"按钮，或在原图上拖动红线来调整分割比例。</p>
+    <p style="color:#666; font-size:0.95em">检测人脸后点击青色框自动选择人脸</p>
   </div>
 
   <div class="divider"></div>
 
-  <h2>实时预览</h2>
   <!-- 原图单独显示，按原始像素比例，容器可滚动 -->
   <h2>原图（可拖动红线操作）</h2>
-  <div class="original-container" style="overflow:auto; border:1px solid #ddd; padding:8px; max-width:100%; max-height:80vh;">
+  <div class="original-container">
+    <div class="upload-controls">
+      <input id="imageInput" class="upload-input" type="file" accept="image/*">
+      <button id="detectButton" class="btn" style="display:none">检测人脸</button>
+    </div>
+    <div class="drop-instructions"><p style="color:#666">将图片拖放到此处或点击图片上传</p></div>
     <canvas id="previewCanvas" style="display:block; max-width:100%; height:auto;"></canvas>
   </div>
   
@@ -51,12 +61,12 @@
     <div class="col center">
       <h3>左侧镜像 → 右侧</h3>
       <canvas id="leftRightCanvas" style="max-width:100%; border:1px solid #ddd; cursor:pointer;" title="双击查看大图"></canvas>
-      <div style="margin-top:8px"><a id="downloadLeftRight" href="#">下载</a></div>
+      <div style="margin-top:8px"><a id="downloadLeftRight" class="btn" href="#" style="text-decoration: none;">下载</a></div>
     </div>
     <div class="col center">
       <h3>右侧镜像 → 左侧</h3>
       <canvas id="rightLeftCanvas" style="max-width:100%; border:1px solid #ddd; cursor:pointer;" title="双击查看大图"></canvas>
-      <div style="margin-top:8px"><a id="downloadRightLeft" href="#">下载</a></div>
+      <div style="margin-top:8px"><a id="downloadRightLeft" class="btn" href="#" style="text-decoration: none;">下载</a></div>
     </div>
   </div>
 
@@ -85,7 +95,7 @@
     <div class="col">
       <h3 class="center">右侧镜像 → 左侧</h3>
       <img src="{{ right_mirrored_b64 }}" alt="right_mirrored">
-      <div class="center" style="margin-top:8px"><a href="{{ right_mirrored_b64 }}" download="right_to_left.png">下载</a></div>
+      <div class="center" style="margin-top:8px"><a href="{{ right_mirrored_b64 }}" download="right_to_left.png"  >下载</a></div>
     </div>
   </div>
   {% endif %}
@@ -94,6 +104,7 @@
   (function(){
     const fileInput = document.getElementById('imageInput');
     const detectButton = document.getElementById('detectButton');
+    const pasteButton = document.getElementById('pasteButton');
     const ratioRange = document.getElementById('ratio');
     const rval = document.getElementById('rval');
     const previewCanvas = document.getElementById('previewCanvas');
@@ -182,6 +193,55 @@
       dRL.href = rlCanvas.toDataURL('image/png'); dRL.download = 'right_to_left.png';
     }
 
+    // Paste from clipboard button
+    if(pasteButton){
+      pasteButton.addEventListener('click', async function(){
+        if(!navigator.clipboard || !navigator.clipboard.read){
+          alert('当前浏览器不支持从剪贴板读取图片。');
+          return;
+        }
+        try{
+          const items = await navigator.clipboard.read();
+          for(const item of items){
+            for(const type of item.types){
+              if(type.startsWith('image/')){
+                const blob = await item.getType(type);
+                let file;
+                try{ file = new File([blob], 'clipboard.png', {type: blob.type}); } catch(e){ file = blob; }
+                uploadedFile = file;
+                detectButton.style.display = 'inline-block';
+                const reader = new FileReader();
+                reader.onload = function(ev){
+                  const im = new Image();
+                  im.onload = function(){
+                    img = im;
+                    faces = [];
+                    document.getElementById('facesData').textContent = '[]';
+                    const iw = img.naturalWidth || img.width;
+                    const ih = img.naturalHeight || img.height;
+                    setCanvasSize(previewCanvas, iw, ih);
+                    pCtx.clearRect(0,0,iw,ih);
+                    pCtx.drawImage(img, 0,0, iw, ih);
+                    try { previewImageData = pCtx.getImageData(0,0,iw,ih); } catch(e) { previewImageData = null; }
+                    offLeftCanvas = null; offRightCanvas = null;
+                    drawAll();
+                    document.querySelector('.original-container div p').style.display = 'none';
+                  };
+                  im.src = ev.target.result;
+                };
+                reader.readAsDataURL(file);
+                return;
+              }
+            }
+          }
+          alert('剪贴板中未找到图片。');
+        }catch(err){
+          console.error('读取剪贴板失败', err);
+          alert('读取剪贴板失败（可能需权限）');
+        }
+      });
+    }
+
     fileInput.addEventListener('change', function(ev){
       const f = ev.target.files && ev.target.files[0];
       if(!f) return;
@@ -210,6 +270,46 @@
       reader.readAsDataURL(f);
     });
 
+    // Drag-and-drop support: allow user to drop an image onto the preview area
+    const dropArea = document.querySelector('.original-container');
+    if(dropArea){
+      dropArea.addEventListener('dragover', function(e){ e.preventDefault(); dropArea.style.outline = '2px dashed #bbb'; });
+      dropArea.addEventListener('dragleave', function(e){ e.preventDefault(); dropArea.style.outline = ''; });
+      dropArea.addEventListener('drop', function(e){
+        e.preventDefault(); dropArea.style.outline = '';
+        const f = (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+        if(!f) return;
+        uploadedFile = f;
+        detectButton.style.display = 'inline-block';
+        const reader = new FileReader();
+        reader.onload = function(ev){
+          const im = new Image();
+          im.onload = function(){
+            img = im;
+            faces = [];
+            document.getElementById('facesData').textContent = '[]';
+            const iw = img.naturalWidth || img.width;
+            const ih = img.naturalHeight || img.height;
+            setCanvasSize(previewCanvas, iw, ih);
+            pCtx.clearRect(0,0,iw,ih);
+            pCtx.drawImage(img, 0,0, iw, ih);
+            try { previewImageData = pCtx.getImageData(0,0,iw,ih); } catch(e) { previewImageData = null; }
+            offLeftCanvas = null; offRightCanvas = null;
+            drawAll();
+            document.querySelector('.original-container div p').style.display = 'none';
+          };
+          im.src = ev.target.result;
+        };
+        reader.readAsDataURL(f);
+      });
+    }
+    const originalContainer = document.querySelector('.original-container');
+    originalContainer.addEventListener('click', function(ev) {
+      if (!img && !dragging && !ev.target.closest('.upload-controls')) {  // 避免点击控件内部触发
+        fileInput.click();
+        document.querySelector('.original-container p').style.display = 'none';
+      }
+    });
     // Detect faces button
     detectButton.addEventListener('click', async function(){
       if(!uploadedFile) return;
